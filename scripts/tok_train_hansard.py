@@ -65,20 +65,38 @@ random.seed(args.seed)
 
 def text_iterator():
     """
-    Stream sentences from HuggingFace Hub with:
-    1) NFKC Unicode normalization
-    2) Split documents into sentences (on '.')
-    3) Shuffle buffer for chaotic era mixing
+    Load from local parquets (if available) or stream from HuggingFace.
     """
-    print("Loading dataset from HuggingFace Hub: common-pile/uk_hansard")
-    dataset = load_dataset("common-pile/uk_hansard", split="train", streaming=True)
+    from nanochat.dataset import HANSARD_DATA_DIR, list_parquet_files
+    import pyarrow.parquet as pq
+    
+    parquet_files = list_parquet_files(HANSARD_DATA_DIR) if os.path.exists(HANSARD_DATA_DIR) else []
+    
+    if parquet_files:
+        print(f"Loading from local parquets: {HANSARD_DATA_DIR} ({len(parquet_files)} files)")
+        def doc_iter():
+            for pf_path in parquet_files:
+                pf = pq.ParquetFile(pf_path)
+                for rg_idx in range(pf.num_row_groups):
+                    rg = pf.read_row_group(rg_idx)
+                    for text in rg.column('text').to_pylist():
+                        yield text
+    else:
+        print("Loading dataset from HuggingFace Hub: common-pile/uk_hansard")
+        dataset = load_dataset("common-pile/uk_hansard", split="train", streaming=True)
+        def doc_iter():
+            for example in dataset:
+                yield example["text"]
 
     buffer = []
     sentence_count = 0
+    doc_count = 0
 
-    for example in dataset:
-        # Extract only the text column, ignore metadata columns
-        text = example["text"]
+    for text in doc_iter():
+        doc_count += 1
+        if doc_count % 1000 == 0:
+            print(f"Processed {doc_count:,} documents, {len(buffer):,} sentences in buffer...")
+        text = text
 
         # Apply NFKC normalization (unifies em-dashes, ligatures, etc.)
         text = unicodedata.normalize("NFKC", text)
