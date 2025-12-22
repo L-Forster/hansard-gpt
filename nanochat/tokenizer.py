@@ -402,9 +402,16 @@ def get_tokenizer(name=None):
     hansard_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
     default_dir = os.path.join(get_base_dir(), "tokenizer")
     
-    if name == "hansard" or (name is None and os.path.exists(hansard_dir)):
+    hansard_exists = os.path.exists(os.path.join(hansard_dir, "tokenizer.pkl"))
+    default_exists = os.path.exists(os.path.join(default_dir, "tokenizer.pkl"))
+    
+    if name == "hansard":
         tokenizer_dir = hansard_dir
-    elif name == "default" or (name is None and os.path.exists(default_dir)):
+    elif name == "default":
+        tokenizer_dir = default_dir
+    elif name is None and hansard_exists:
+        tokenizer_dir = hansard_dir
+    elif name is None and default_exists:
         tokenizer_dir = default_dir
     else:
         raise ValueError(f"No tokenizer found. Train one first.")
@@ -420,14 +427,20 @@ def get_token_bytes(device="cpu", name=None):
     hansard_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
     default_dir = os.path.join(get_base_dir(), "tokenizer")
     
-    if name == "hansard" or (name is None and os.path.exists(hansard_dir)):
+    hansard_exists = os.path.exists(os.path.join(hansard_dir, "token_bytes.pt"))
+    default_exists = os.path.exists(os.path.join(default_dir, "token_bytes.pt"))
+    
+    if name == "hansard":
         tokenizer_dir = hansard_dir
-    elif name == "default" or (name is None and os.path.exists(default_dir)):
+    elif name == "default":
+        tokenizer_dir = default_dir
+    elif name is None and hansard_exists:
+        tokenizer_dir = hansard_dir
+    elif name is None and default_exists:
         tokenizer_dir = default_dir
     else:
         raise ValueError(f"No tokenizer found. Train one first.")
     token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
-    assert os.path.exists(token_bytes_path), f"Token bytes not found at {token_bytes_path}? It gets written by tok_train.py"
     with open(token_bytes_path, "rb") as f:
         token_bytes = torch.load(f, map_location=device)
     return token_bytes
