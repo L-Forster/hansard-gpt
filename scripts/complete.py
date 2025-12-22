@@ -19,6 +19,7 @@ parser.add_argument('-s', '--step', type=int, default=None)
 parser.add_argument('-n', '--max-tokens', type=int, default=128)
 parser.add_argument('-t', '--temperature', type=float, default=0.7)
 parser.add_argument('-k', '--top-k', type=int, default=50)
+parser.add_argument('-r', '--repetition-penalty', type=float, default=1.2, help='Repetition penalty (1.0=off)')
 args = parser.parse_args()
 
 device_type = autodetect_device_type()
@@ -66,7 +67,8 @@ while True:
     print("\nCompletion: ", end="", flush=True)
     with autocast_ctx:
         for token_col, _ in engine.generate(tokens, num_samples=1, max_tokens=args.max_tokens, 
-                                             temperature=args.temperature, top_k=args.top_k):
+                                             temperature=args.temperature, top_k=args.top_k,
+                                             repetition_penalty=args.repetition_penalty):
             print(tokenizer.decode([token_col[0]]), end="", flush=True)
     print("\n")
     

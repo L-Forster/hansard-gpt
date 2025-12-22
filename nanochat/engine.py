@@ -162,9 +162,25 @@ class KVCache:
 
 # -----------------------------------------------------------------------------
 @torch.inference_mode()
-def sample_next_token(logits, rng, temperature=1.0, top_k=None):
+def apply_repetition_penalty(logits, past_tokens, penalty=1.2):
+    """Apply repetition penalty to discourage repeating tokens."""
+    if penalty == 1.0 or not past_tokens:
+        return logits
+    for b in range(logits.size(0)):
+        for token_id in set(past_tokens[b] if isinstance(past_tokens[0], list) else past_tokens):
+            if logits[b, token_id] > 0:
+                logits[b, token_id] /= penalty
+            else:
+                logits[b, token_id] *= penalty
+    return logits
+
+@torch.inference_mode()
+def sample_next_token(logits, rng, temperature=1.0, top_k=None, past_tokens=None, repetition_penalty=1.0):
     """Sample a single next token from given logits of shape (B, vocab_size). Returns (B, 1)."""
     assert temperature >= 0.0, "temperature must be non-negative"
+    # Apply repetition penalty
+    if repetition_penalty != 1.0 and past_tokens is not None:
+        logits = apply_repetition_penalty(logits.clone(), past_tokens, repetition_penalty)
     if temperature == 0.0:
         return torch.argmax(logits, dim=-1, keepdim=True)
     if top_k is not None:
@@ -197,7 +213,7 @@ class Engine:
         self.tokenizer = tokenizer # needed for tool use
 
     @torch.inference_mode()
-    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42):
+    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42, repetition_penalty=1.0):
         """Same as generate, but does single prefill and then clones the KV cache."""
         assert isinstance(tokens, list) and isinstance(tokens[0], int), "expecting list of ints"
         device = self.model.get_device()
@@ -228,7 +244,7 @@ class Engine:
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
         logits = self.model.forward(ids, kv_cache=kv_cache_prefill)
         logits = logits[:, -1, :]
-        next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
+        next_ids = sample_next_token(logits, rng, temperature, top_k, past_tokens=tokens, repetition_penalty=repetition_penalty)
         sampled_tokens = next_ids[:, 0].tolist()
 
         # 2) Replicate the KV cache for each sample/row
@@ -265,7 +281,8 @@ class Engine:
                 # Forward the model and get the next token for each row
                 logits = self.model.forward(ids, kv_cache=kv_cache_decode)  # (B, T, vocab_size)
                 logits = logits[:, -1, :]  # (B, vocab_size) at last time step
-                next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
+                past_tokens = [state.current_tokens for state in row_states]
+                next_ids = sample_next_token(logits, rng, temperature, top_k, past_tokens=past_tokens, repetition_penalty=repetition_penalty)
                 sampled_tokens = next_ids[:, 0].tolist()
 
             # Process each row: choose the next token, update state, optional tool use
