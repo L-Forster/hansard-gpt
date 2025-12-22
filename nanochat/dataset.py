@@ -33,8 +33,13 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # These functions are useful utilities to other modules, can/should be imported
 
 def list_parquet_files(data_dir=None):
-    """ Looks into a data dir and returns full paths to all parquet files. """
-    data_dir = DATA_DIR if data_dir is None else data_dir
+    """ Looks into a data dir and returns full paths to all parquet files. Auto-detects if not specified. """
+    if data_dir is None:
+        # Auto-detect: prefer Hansard if it has data, else use default
+        if os.path.exists(HANSARD_DATA_DIR) and any(f.endswith('.parquet') for f in os.listdir(HANSARD_DATA_DIR) if not f.endswith('.tmp')):
+            data_dir = HANSARD_DATA_DIR
+        else:
+            data_dir = DATA_DIR
     parquet_files = sorted([
         f for f in os.listdir(data_dir)
         if f.endswith('.parquet') and not f.endswith('.tmp')

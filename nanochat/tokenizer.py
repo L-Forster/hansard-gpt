@@ -393,41 +393,39 @@ class RustBPETokenizer:
 # -----------------------------------------------------------------------------
 # nanochat-specific convenience functions
 
-def get_tokenizer(name="default"):
+def get_tokenizer(name=None):
     """
-    Get a tokenizer by name.
-    Args:
-        name: "default" for fineweb tokenizer, "hansard" for UK Hansard tokenizer
+    Get a tokenizer. Auto-detects which one is available if name not specified.
     """
-    if name == "default":
-        from nanochat.common import get_base_dir
-        base_dir = get_base_dir()
-        tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    elif name == "hansard":
-        # Hansard tokenizer is stored in project data/ directory
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        tokenizer_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
+    from nanochat.common import get_base_dir
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hansard_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
+    default_dir = os.path.join(get_base_dir(), "tokenizer")
+    
+    if name == "hansard" or (name is None and os.path.exists(hansard_dir)):
+        tokenizer_dir = hansard_dir
+    elif name == "default" or (name is None and os.path.exists(default_dir)):
+        tokenizer_dir = default_dir
     else:
-        raise ValueError(f"Unknown tokenizer name: {name}")
+        raise ValueError(f"No tokenizer found. Train one first.")
     return RustBPETokenizer.from_directory(tokenizer_dir)
 
-def get_token_bytes(device="cpu", name="default"):
+def get_token_bytes(device="cpu", name=None):
     """
-    Get token bytes mapping for bits-per-byte evaluation.
-    Args:
-        device: Target device
-        name: "default" for fineweb tokenizer, "hansard" for UK Hansard tokenizer
+    Get token bytes mapping for bits-per-byte evaluation. Auto-detects tokenizer.
     """
     import torch
-    if name == "default":
-        from nanochat.common import get_base_dir
-        base_dir = get_base_dir()
-        tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    elif name == "hansard":
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        tokenizer_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
+    from nanochat.common import get_base_dir
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hansard_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
+    default_dir = os.path.join(get_base_dir(), "tokenizer")
+    
+    if name == "hansard" or (name is None and os.path.exists(hansard_dir)):
+        tokenizer_dir = hansard_dir
+    elif name == "default" or (name is None and os.path.exists(default_dir)):
+        tokenizer_dir = default_dir
     else:
-        raise ValueError(f"Unknown tokenizer name: {name}")
+        raise ValueError(f"No tokenizer found. Train one first.")
     token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
     assert os.path.exists(token_bytes_path), f"Token bytes not found at {token_bytes_path}? It gets written by tok_train.py"
     with open(token_bytes_path, "rb") as f:
