@@ -258,13 +258,20 @@ while True:
     if master_process and (last_step or (step > 0 and step % sample_every == 0)):
         model.eval()
         prompts = [
-            "The capital of France is",
-            "The chemical symbol of gold is",
-            "If yesterday was Friday, then tomorrow will be",
-            "The opposite of hot is",
-            "The planets of the solar system are:",
-            "My favorite color is",
-            "If 5*x + 3 = 13, then x is",
+            "The speed of light in a vacuum is approximately",
+            "The main character in the novel '1984' is",
+            "If a tree falls in a forest and no one is there to hear it,",
+            "The boiling point of water at sea level is",
+            "The steps of the scientific method include",
+            "In the quiet of the night, I heard a",
+            "The sum of the angles in a triangle is",
+            "The largest planet in our solar system is",
+            "The DNA molecule is shaped like a",
+            "If all men are mortal, and Socrates is a man, then",
+            "The relationship between a mother and her child is",
+            "The primary colors are",
+            "Once the mysterious package arrived,",
+            "The derivative of x squared is",
         ]
         engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
         for prompt in prompts:
