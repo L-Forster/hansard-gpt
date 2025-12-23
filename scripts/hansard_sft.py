@@ -118,9 +118,9 @@ def extract_qa_pairs(max_pairs=-1):
     dataset = load_dataset("common-pile/uk_hansard", split="train", streaming=True)
     
     qa_pairs = []
-    # Pattern: Name: To ask Her Majesty's Government [question]
+    # Pattern: Name: To ask His/Her Majesty's Government [question]
     question_pattern = re.compile(
-        r'^([A-Za-z\s\-\'\.]+?):\s*(To ask Her Majesty\'s Government|asked Her Majesty\'s Government)',
+        r'^([A-Za-z\s\-\'\.]+?):\s*(To ask (His|Her) Majesty\'s Government|asked (His|Her) Majesty\'s Government)',
         re.MULTILINE
     )
     
@@ -140,7 +140,10 @@ def extract_qa_pairs(max_pairs=-1):
             para = paragraphs[i]
             
             # Check if this paragraph contains a question
-            if 'To ask Her Majesty\'s Government' in para or 'asked Her Majesty\'s Government' in para:
+            if any(phrase in para for phrase in [
+                "To ask Her Majesty's Government", "To ask His Majesty's Government",
+                "asked Her Majesty's Government", "asked His Majesty's Government"
+            ]):
                 # This is a question - next paragraph(s) should be the answer
                 question = para
                 
@@ -150,7 +153,7 @@ def extract_qa_pairs(max_pairs=-1):
                 while j < len(paragraphs):
                     next_para = paragraphs[j]
                     # Check if it looks like an answer (starts with a name followed by colon)
-                    if re.match(r'^[A-Za-z\s\-\'\.]+?:', next_para):
+                    if re.match(r'^[A-Za-z\s\-\'\.\,]+?:', next_para):
                         answer_parts.append(next_para)
                         break
                     j += 1
