@@ -121,6 +121,13 @@ class HuggingFaceTokenizer:
         # encode a single special token via exact match
         return self.tokenizer.token_to_id(text)
 
+    def encode_special_safe(self, text):
+        """Safely encode a special token, returning None if it doesn't exist."""
+        try:
+            return self.tokenizer.token_to_id(text)
+        except (KeyError, ValueError):
+            return None
+
     def get_bos_token_id(self):
         bos = self.encode_special("<|bos|>")
         return bos
@@ -225,6 +232,13 @@ class RustBPETokenizer:
     def encode_special(self, text):
         return self.enc.encode_single_token(text)
 
+    def encode_special_safe(self, text):
+        """Safely encode a special token, returning None if it doesn't exist."""
+        try:
+            return self.enc.encode_single_token(text)
+        except (KeyError, ValueError):
+            return None
+
     def get_bos_token_id(self):
         return self.bos_token_id
 
@@ -301,8 +315,9 @@ class RustBPETokenizer:
         bos = self.get_bos_token_id()
         user_start, user_end = self.encode_special("<|user_start|>"), self.encode_special("<|user_end|>")
         assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
-        python_start, python_end = self.encode_special("<|python_start|>"), self.encode_special("<|python_end|>")
-        output_start, output_end = self.encode_special("<|output_start|>"), self.encode_special("<|output_end|>")
+        # Python tokens are optional (may not exist in all tokenizers)
+        python_start, python_end = self.encode_special_safe("<|python_start|>"), self.encode_special_safe("<|python_end|>")
+        output_start, output_end = self.encode_special_safe("<|output_start|>"), self.encode_special_safe("<|output_end|>")
 
         # now we can tokenize the conversation
         add_tokens(bos, 0)
@@ -335,15 +350,25 @@ class RustBPETokenizer:
                             add_tokens(value_ids, 1)
                         elif part["type"] == "python":
                             # python tool call => add the tokens inside <|python_start|> and <|python_end|>
-                            add_tokens(python_start, 1)
-                            add_tokens(value_ids, 1)
-                            add_tokens(python_end, 1)
+                            # Skip if tokens don't exist in this tokenizer
+                            if python_start is not None and python_end is not None:
+                                add_tokens(python_start, 1)
+                                add_tokens(value_ids, 1)
+                                add_tokens(python_end, 1)
+                            else:
+                                # Fallback: just add the text tokens if python tokens don't exist
+                                add_tokens(value_ids, 1)
                         elif part["type"] == "python_output":
                             # python output => add the tokens inside <|output_start|> and <|output_end|>
                             # none of these tokens are supervised because the tokens come from Python at test time
-                            add_tokens(output_start, 0)
-                            add_tokens(value_ids, 0)
-                            add_tokens(output_end, 0)
+                            # Skip if tokens don't exist in this tokenizer
+                            if output_start is not None and output_end is not None:
+                                add_tokens(output_start, 0)
+                                add_tokens(value_ids, 0)
+                                add_tokens(output_end, 0)
+                            else:
+                                # Fallback: just add the text tokens if output tokens don't exist
+                                add_tokens(value_ids, 0)
                         else:
                             raise ValueError(f"Unknown part type: {part['type']}")
                 else:

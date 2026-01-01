@@ -189,7 +189,11 @@ print0(f"Train: {len(train_qa)}, Val: {len(val_qa)}")
 # DataLoader
 
 def sft_data_generator(qa_list, batch_size):
-    pad_token_id = tokenizer.encode_special("<|assistant_end|>")
+    # Use assistant_end as pad token if available, otherwise fallback to BOS
+    try:
+        pad_token_id = tokenizer.encode_special("<|assistant_end|>")
+    except (KeyError, ValueError):
+        pad_token_id = tokenizer.get_bos_token_id()
     
     def collate_and_yield(batch):
         nrows = len(batch)
