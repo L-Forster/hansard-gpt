@@ -42,7 +42,19 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
     # Load the model state
     model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
-    model_data = torch.load(model_path, map_location=device)
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Checkpoint file not found: {model_path}")
+    try:
+        model_data = torch.load(model_path, map_location=device)
+    except RuntimeError as e:
+        if "failed finding central directory" in str(e) or "zip archive" in str(e).lower():
+            raise RuntimeError(
+                f"Checkpoint file appears to be corrupted or incomplete: {model_path}\n"
+                f"File size: {os.path.getsize(model_path)} bytes\n"
+                f"Original error: {e}\n"
+                f"Try re-saving the checkpoint or use a different step."
+            ) from e
+        raise
     # Load the optimizer state if requested
     optimizer_data = None
     if load_optimizer:

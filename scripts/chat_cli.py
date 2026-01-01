@@ -37,8 +37,22 @@ if args.checkpoint_dir:
     from nanochat.tokenizer import RustBPETokenizer
     # Load from weights/ subdir
     weights_dir = os.path.join(args.checkpoint_dir, "weights")
+    if not os.path.exists(weights_dir):
+        raise FileNotFoundError(f"Weights directory not found: {weights_dir}")
     step = args.step if args.step else find_last_step(weights_dir)
-    model_data, _, meta = load_checkpoint(weights_dir, step, device)
+    try:
+        model_data, _, meta = load_checkpoint(weights_dir, step, device)
+    except RuntimeError as e:
+        if "corrupted" in str(e).lower():
+            print(f"\nError: {e}\n")
+            print("Available checkpoints:")
+            import glob
+            checkpoints = glob.glob(os.path.join(weights_dir, "model_*.pt"))
+            for cp in sorted(checkpoints):
+                size = os.path.getsize(cp)
+                print(f"  {os.path.basename(cp)} ({size:,} bytes)")
+            raise
+        raise
     if device.type in {"cpu", "mps"}:
         model_data = {k: v.float() if v.dtype == torch.bfloat16 else v for k, v in model_data.items()}
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
