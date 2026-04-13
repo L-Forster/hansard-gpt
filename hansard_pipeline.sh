@@ -34,15 +34,21 @@ ensure_python_env
 RUN_NAME="${RUN_NAME:-hansard_d12}"
 MODEL_TAG="${MODEL_TAG:-d12}"
 SFT_RUN_NAME="${SFT_RUN_NAME:-${RUN_NAME}_powell_sft}"
+TOKENIZER_DIR="data/tokenizer_hansard"
+DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-32}"
 
 echo "==> Step 1/4: Building Hansard datasets"
 python -m nanochat.dataset --hansard
 
-echo "==> Step 2/4: Training Hansard tokenizer"
-python -m scripts.tok_train_hansard
+if [ -f "${TOKENIZER_DIR}/tokenizer.pkl" ] && [ -f "${TOKENIZER_DIR}/token_bytes.pt" ] && [ -f "${TOKENIZER_DIR}/vocab.txt" ]; then
+  echo "==> Step 2/4: Using existing Hansard tokenizer in ${TOKENIZER_DIR}"
+else
+  echo "==> Step 2/4: Training Hansard tokenizer"
+  python -m scripts.tok_train_hansard
+fi
 
 echo "==> Step 3/4: Pretraining Hansard base model"
-RUN_NAME="${RUN_NAME}" MODEL_TAG="${MODEL_TAG}" bash train_hansard.sh
+RUN_NAME="${RUN_NAME}" MODEL_TAG="${MODEL_TAG}" DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE}" bash train_hansard.sh
 
 echo "==> Step 4/4: Powell SFT"
 python -m scripts.hansard_sft --run="${SFT_RUN_NAME}" --model_tag="${MODEL_TAG}"
