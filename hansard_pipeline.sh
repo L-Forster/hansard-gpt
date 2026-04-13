@@ -35,7 +35,7 @@ RUN_NAME="${RUN_NAME:-hansard_d12}"
 MODEL_TAG="${MODEL_TAG:-d12}"
 SFT_RUN_NAME="${SFT_RUN_NAME:-${RUN_NAME}_powell_sft}"
 TOKENIZER_DIR="data/tokenizer_hansard"
-DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-32}"
+DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-16}"
 
 echo "==> Step 1/4: Building Hansard datasets"
 python -m nanochat.dataset --hansard
