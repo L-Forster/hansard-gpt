@@ -41,14 +41,14 @@ device_type = ""
 dtype = "bfloat16"
 device_batch_size = 4
 max_seq_len = -1
-num_epochs = 1
+num_epochs = 4
 num_iterations = -1
 target_examples_per_step = 32
 unembedding_lr = 0.004
 embedding_lr = 0.2
 matrix_lr = 0.02
 weight_decay = 0.0
-init_lr_frac = 0.02
+init_lr_frac = 1.0
 eval_every = 100
 eval_steps = 50
 val_ratio = 0.05
@@ -275,11 +275,15 @@ optimizers = model.setup_optimizers(
 )
 for opt in optimizers:
     for group in opt.param_groups:
-        group["lr"] = group["lr"] * init_lr_frac
         group["initial_lr"] = group["lr"]
 
+warmup_steps = max(1, num_iterations // 10)
+
 def get_lr_multiplier(it):
-    return 1.0 - it / num_iterations
+    if it < warmup_steps:
+        return init_lr_frac + (1.0 - init_lr_frac) * it / warmup_steps
+    progress = (it - warmup_steps) / max(1, num_iterations - warmup_steps)
+    return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 # -----------------------------------------------------------------------------
 # Training

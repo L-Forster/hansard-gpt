@@ -94,8 +94,12 @@ while True:
     if not user_input:
         continue
 
-    # Tokenize prompt
-    tokens = [bos] + tokenizer.encode(user_input)
+    # Tokenize prompt in chat format so SFT-trained models respond correctly
+    conversation = {"messages": [
+        {"role": "user", "content": user_input},
+        {"role": "assistant", "content": ""},  # dummy, popped by render_for_completion
+    ]}
+    tokens = tokenizer.render_for_completion(conversation)
 
     generate_kwargs = {
         "num_samples": 1,
