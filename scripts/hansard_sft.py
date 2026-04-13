@@ -41,15 +41,15 @@ device_type = ""
 dtype = "bfloat16"
 device_batch_size = 4
 max_seq_len = -1
-num_epochs = 4
+num_epochs = 2
 num_iterations = -1
 target_examples_per_step = 32
-unembedding_lr = 0.004
-embedding_lr = 0.2
-matrix_lr = 0.02
-weight_decay = 0.0
+unembedding_lr = 0.001
+embedding_lr = 0.05
+matrix_lr = 0.005
+weight_decay = 0.1
 init_lr_frac = 1.0
-eval_every = 100
+eval_every = 10
 eval_steps = 50
 val_ratio = 0.05
 powell_data_dir = ""
@@ -291,6 +291,8 @@ def get_lr_multiplier(it):
 print0("Starting training...")
 step_num = 0
 val_loss = float("inf")
+best_val_loss = float("inf")
+best_model_state = None
 train_loss_item = float("inf")
 
 for step_num in range(num_iterations):
@@ -312,6 +314,10 @@ for step_num in range(num_iterations):
         val_loss = val_loss.item()
         print0(f"Step {step_num:05d} | Val loss: {val_loss:.6f}")
         wandb_run.log({"step": step_num, "val_loss": val_loss})
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state = {k: v.clone() for k, v in orig_model.state_dict().items()}
+            print0(f"  -> New best val loss: {best_val_loss:.6f}")
         model.train()
 
     if last_step:
@@ -347,9 +353,12 @@ for step_num in range(num_iterations):
 if master_process:
     output_dir = os.path.join(project_dir, "hansard_sft_checkpoints", model_tag)
     os.makedirs(output_dir, exist_ok=True)
-    save_checkpoint(output_dir, step_num, orig_model.state_dict(), None, {
+    save_state = best_model_state if best_model_state is not None else orig_model.state_dict()
+    print0(f"Saving best checkpoint (val_loss={best_val_loss:.6f})")
+    save_checkpoint(output_dir, step_num, save_state, None, {
         "step": step_num,
-        "val_loss": val_loss,
+        "best_val_loss": best_val_loss,
+        "final_val_loss": val_loss,
         "model_config": model_config_kwargs,
         "powell_data_dir": powell_data_dir,
         "train_conversations": len(train_conversations),

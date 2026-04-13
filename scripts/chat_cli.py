@@ -30,24 +30,32 @@ device_type = autodetect_device_type() if args.device_type == "" else args.devic
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
 ptdtype = torch.float32 if args.dtype == 'float32' else torch.bfloat16
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
-if args.checkpoint_dir:
-    import os
-    from nanochat.checkpoint_manager import load_checkpoint, find_last_step
-    from nanochat.gpt import GPT, GPTConfig
-    from nanochat.tokenizer import RustBPETokenizer
-    # Load from weights/ subdir
+import os
+import glob as glob_mod
+from nanochat.checkpoint_manager import load_checkpoint, find_last_step
+from nanochat.gpt import GPT, GPTConfig
+from nanochat.tokenizer import RustBPETokenizer
+
+# Resolve checkpoint directory: explicit flag, or default to latest SFT checkpoint
+project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if not args.checkpoint_dir:
+    model_tag = args.model_tag or "d12"
+    args.checkpoint_dir = os.path.join(project_dir, "hansard_sft_checkpoints", model_tag)
+
+if os.path.isdir(args.checkpoint_dir):
+    # Support both flat layout (model_*.pt in dir) and weights/ subdir layout
     weights_dir = os.path.join(args.checkpoint_dir, "weights")
-    if not os.path.exists(weights_dir):
-        raise FileNotFoundError(f"Weights directory not found: {weights_dir}")
+    if not os.path.isdir(weights_dir) or not glob_mod.glob(os.path.join(weights_dir, "model_*.pt")):
+        weights_dir = args.checkpoint_dir
     step = args.step if args.step else find_last_step(weights_dir)
+    print(f"Loading checkpoint from {weights_dir} step {step}")
     try:
         model_data, _, meta = load_checkpoint(weights_dir, step, device)
     except RuntimeError as e:
         if "corrupted" in str(e).lower():
             print(f"\nError: {e}\n")
             print("Available checkpoints:")
-            import glob
-            checkpoints = glob.glob(os.path.join(weights_dir, "model_*.pt"))
+            checkpoints = glob_mod.glob(os.path.join(weights_dir, "model_*.pt"))
             for cp in sorted(checkpoints):
                 size = os.path.getsize(cp)
                 print(f"  {os.path.basename(cp)} ({size:,} bytes)")
@@ -62,8 +70,10 @@ if args.checkpoint_dir:
     model.init_weights()
     model.load_state_dict(model_data, strict=True, assign=True)
     model.eval()
-    # Load from tokenizer/ subdir
+    # Resolve tokenizer: check tokenizer/ subdir, then data/tokenizer_hansard
     tokenizer_dir = os.path.join(args.checkpoint_dir, "tokenizer")
+    if not os.path.isdir(tokenizer_dir):
+        tokenizer_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
     tokenizer = RustBPETokenizer.from_directory(tokenizer_dir)
 else:
     model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
