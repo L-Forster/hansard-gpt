@@ -1,6 +1,30 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
+
+UV_EXTRA="${UV_EXTRA:-gpu}"
+
+ensure_python_env() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required but was not found on PATH."
+    echo "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
+  fi
+
+  if [ ! -d ".venv" ]; then
+    uv venv
+  fi
+
+  uv sync --extra "${UV_EXTRA}"
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  export NANOCHAT_ENV_READY=1
+}
+
+ensure_python_env
+
 # End-to-end Hansard pipeline:
 # 1. Build shuffled Hansard and Powell parquet corpora
 # 2. Train Hansard tokenizer

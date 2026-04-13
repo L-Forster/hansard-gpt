@@ -1,6 +1,32 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
+
+UV_EXTRA="${UV_EXTRA:-gpu}"
+
+ensure_python_env() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required but was not found on PATH."
+    echo "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
+  fi
+
+  if [ ! -d ".venv" ]; then
+    uv venv
+  fi
+
+  if [ "${NANOCHAT_ENV_READY:-0}" != "1" ]; then
+    uv sync --extra "${UV_EXTRA}"
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    export NANOCHAT_ENV_READY=1
+  fi
+}
+
+ensure_python_env
+
 # Optimized training config for Hansard dataset on 80GB A100
 # One-pass pretraining over the shuffled Hansard train split.
 
