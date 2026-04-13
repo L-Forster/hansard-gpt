@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
 UV_EXTRA="${UV_EXTRA:-gpu}"
+SKIP_PRETRAIN=0
+[ "${1:-}" = "--skip-pretrain" ] && SKIP_PRETRAIN=1
 
 ensure_python_env() {
   if ! command -v uv >/dev/null 2>&1; then
@@ -47,8 +49,12 @@ else
   python -m scripts.tok_train_hansard
 fi
 
-echo "==> Step 3/4: Pretraining Hansard base model"
-RUN_NAME="${RUN_NAME}" MODEL_TAG="${MODEL_TAG}" DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE}" bash train_hansard.sh
+if [ "${SKIP_PRETRAIN}" = "1" ]; then
+  echo "==> Step 3/4: Skipping Hansard pretraining"
+else
+  echo "==> Step 3/4: Pretraining Hansard base model"
+  RUN_NAME="${RUN_NAME}" MODEL_TAG="${MODEL_TAG}" DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE}" bash train_hansard.sh
+fi
 
 echo "==> Step 4/4: Powell SFT"
 python -m scripts.hansard_sft --run="${SFT_RUN_NAME}" --model_tag="${MODEL_TAG}"

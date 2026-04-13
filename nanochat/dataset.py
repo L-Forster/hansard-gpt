@@ -12,6 +12,7 @@ import argparse
 import shutil
 import re
 import time
+import json
 import requests
 import pyarrow.parquet as pq
 from multiprocessing import Pool
@@ -131,7 +132,16 @@ def download_hansard():
             for filename in os.listdir(data_dir)
         )
 
-    def flush_shard(texts, data_dir, shard_idx):
+    def has_powell_sft_output(data_dir):
+        if not has_complete_parquet_output(data_dir):
+            return False
+        parquet_files = list_parquet_files(data_dir)
+        if not parquet_files:
+            return False
+        schema_names = set(pq.ParquetFile(parquet_files[0]).schema_arrow.names)
+        return {"question", "answer"}.issubset(schema_names)
+
+    def flush_text_shard(texts, data_dir, shard_idx):
         if not texts:
             return shard_idx
         table = pa.table({"text": texts})
@@ -141,9 +151,31 @@ def download_hansard():
         texts.clear()
         return shard_idx + 1
 
+    def flush_powell_shard(examples, data_dir, shard_idx):
+        if not examples:
+            return shard_idx
+        questions = [example["question"] for example in examples]
+        answers = [example["answer"] for example in examples]
+        messages = [json.dumps(example["messages"], ensure_ascii=True) for example in examples]
+        table = pa.table({"question": questions, "answer": answers, "messages": messages})
+        path = os.path.join(data_dir, f"shard_{shard_idx:05d}.parquet")
+        pq.write_table(table, path, row_group_size=1024)
+        print(f"Wrote {path} ({len(examples):,} rows)")
+        examples.clear()
+        return shard_idx + 1
+
+    def looks_like_question(paragraph):
+        lowered = paragraph.lower()
+        return (
+            "?" in paragraph
+            or lowered.startswith("to ask ")
+            or " asked " in lowered
+            or lowered.startswith("asked ")
+        )
+
     hansard_dir = HANSARD_DATA_DIR
     powell_dir = HANSARD_POWELL_SFT_DIR
-    if has_complete_parquet_output(hansard_dir) and has_complete_parquet_output(powell_dir):
+    if has_complete_parquet_output(hansard_dir) and has_powell_sft_output(powell_dir):
         print(f"Using existing Hansard shards in {hansard_dir}")
         print(f"Using existing Powell shards in {powell_dir}")
         return
@@ -161,30 +193,53 @@ def download_hansard():
     ds = load_dataset("common-pile/uk_hansard")
     dataset = ds["train"].shuffle(seed=42)
 
-    powell_pattern = re.compile(r"^(?:Mr\.?\s+)?(?:J\.?\s*)?Enoch Powell\s*:", re.IGNORECASE)
-    powell_texts = []
+    powell_pattern = re.compile(
+        r"^(?:"
+        r"(?:Mr\.?\s+)?(?:J\.?\s*)?Enoch Powell"
+        r"|.*\((?:Mr\.?\s+)?(?:J\.?\s*)?Enoch Powell\)"
+        r")\s*:",
+        re.IGNORECASE,
+    )
+    powell_examples = []
     hansard_shard_idx = 0
     powell_shard_idx = 0
     hansard_texts = []
     powell_matches = 0
+    powell_qa_matches = 0
     for i, ex in enumerate(dataset):
         text = unicodedata.normalize("NFKC", ex["text"])
         hansard_texts.append(text)
         paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
-        for paragraph in paragraphs:
+        for paragraph_idx, paragraph in enumerate(paragraphs):
             if powell_pattern.match(paragraph):
-                powell_texts.append(paragraph)
                 powell_matches += 1
+                if paragraph_idx == 0:
+                    continue
+                question = paragraphs[paragraph_idx - 1]
+                if not looks_like_question(question):
+                    continue
+                powell_examples.append({
+                    "question": question,
+                    "answer": paragraph,
+                    "messages": [
+                        {"role": "user", "content": question},
+                        {"role": "assistant", "content": paragraph},
+                    ],
+                })
+                powell_qa_matches += 1
 
         if len(hansard_texts) >= 10000:
-            hansard_shard_idx = flush_shard(hansard_texts, hansard_tmp_dir, hansard_shard_idx)
-        if len(powell_texts) >= 10000:
-            powell_shard_idx = flush_shard(powell_texts, powell_tmp_dir, powell_shard_idx)
+            hansard_shard_idx = flush_text_shard(hansard_texts, hansard_tmp_dir, hansard_shard_idx)
+        if len(powell_examples) >= 10000:
+            powell_shard_idx = flush_powell_shard(powell_examples, powell_tmp_dir, powell_shard_idx)
         if (i + 1) % 1000 == 0:
-            print(f"Processed {i + 1:,} docs | Powell paragraphs: {powell_matches:,}")
+            print(
+                f"Processed {i + 1:,} docs | Powell paragraphs: {powell_matches:,} | "
+                f"Powell QA pairs: {powell_qa_matches:,}"
+            )
 
-    hansard_shard_idx = flush_shard(hansard_texts, hansard_tmp_dir, hansard_shard_idx)
-    powell_shard_idx = flush_shard(powell_texts, powell_tmp_dir, powell_shard_idx)
+    hansard_shard_idx = flush_text_shard(hansard_texts, hansard_tmp_dir, hansard_shard_idx)
+    powell_shard_idx = flush_powell_shard(powell_examples, powell_tmp_dir, powell_shard_idx)
 
     if os.path.exists(hansard_dir):
         shutil.rmtree(hansard_dir)
@@ -196,6 +251,7 @@ def download_hansard():
     print(f"Done! Saved {hansard_shard_idx:,} full-data shard(s) to {hansard_dir}")
     print(f"Done! Saved {powell_shard_idx:,} Powell shard(s) to {powell_dir}")
     print(f"Powell paragraphs matched: {powell_matches:,}")
+    print(f"Powell QA pairs matched: {powell_qa_matches:,}")
 
 
 if __name__ == "__main__":
