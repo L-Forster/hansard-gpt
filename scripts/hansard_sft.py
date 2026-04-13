@@ -1,14 +1,10 @@
 """
-Instruction-tune a Hansard base model using Q&A pairs extracted from parliamentary proceedings.
-
-The UK Hansard data naturally contains Q&A structure:
-- Lords/MPs ask questions: "To ask Her Majesty's Government..."
-- Ministers respond with answers
+Fine-tune a Hansard base model on Enoch Powell paragraphs using plain LM loss.
 
 This script:
-1. Extracts Q&A pairs from the Hansard dataset
-2. Formats them as user/assistant conversations
-3. Trains the model on them
+1. Loads Powell-only parquet shards from data/hansard_powell_sft/
+2. Tokenizes the text with the Hansard tokenizer
+3. Continues LM training from the pretrained Hansard checkpoint
 
 Usage:
     python -m scripts.hansard_sft
@@ -17,29 +13,32 @@ Usage:
 Hyperparameters: Same as chat_sft.py (proven defaults from nanochat codebase).
 """
 
+import math
 import os
-import re
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-import wandb
+from contextlib import nullcontext
+
+import pyarrow.parquet as pq
 import torch
 import torch.distributed as dist
-from contextlib import nullcontext
-from datasets import load_dataset
+import wandb
 
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, autodetect_device_type
-from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint, find_largest_model, find_last_step
+from nanochat.checkpoint_manager import find_last_step, load_checkpoint, save_checkpoint
+from nanochat.common import compute_cleanup, compute_init, print0, DummyWandb, autodetect_device_type
+from nanochat.dataset import HANSARD_POWELL_SFT_DIR, list_parquet_files
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.tokenizer import get_tokenizer
 
 # -----------------------------------------------------------------------------
 # Hyperparameters (same as chat_sft.py)
 run = "dummy"
-model_tag = None
+model_tag = "d12"
 step = None
 device_type = ""
 dtype = "bfloat16"
 device_batch_size = 4
+max_seq_len = -1
 num_epochs = 1
 num_iterations = -1
 target_examples_per_step = 32
@@ -51,7 +50,8 @@ init_lr_frac = 0.02
 eval_every = 100
 eval_steps = 50
 val_ratio = 0.05
-max_qa_pairs = -1  # limit Q&A pairs for debugging (-1 = all)
+powell_data_dir = ""
+tokenizer_batch_size = 256
 # CLI override
 config_keys = [k for k, v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read())
@@ -78,10 +78,11 @@ checkpoints_dir = os.path.join(project_dir, "checkpoints")
 if not os.path.exists(checkpoints_dir):
     raise FileNotFoundError(f"No checkpoints directory: {checkpoints_dir}")
 
-if model_tag is None:
-    model_tag = find_largest_model(checkpoints_dir)
-    print0(f"Auto-detected model: {model_tag}")
 checkpoint_dir = os.path.join(checkpoints_dir, model_tag)
+if not os.path.isdir(checkpoint_dir):
+    raise FileNotFoundError(
+        f"No pretrained checkpoint directory found at {checkpoint_dir}. Run `bash train_hansard.sh` first or override --model_tag."
+    )
 
 if step is None:
     step = find_last_step(checkpoint_dir)
@@ -105,85 +106,70 @@ del model_data
 tokenizer = get_tokenizer(name="hansard")
 assert tokenizer.get_vocab_size() == model_config_kwargs["vocab_size"]
 orig_model = model
+sequence_len = model_config_kwargs["sequence_len"] if max_seq_len == -1 else max_seq_len
+if sequence_len > model_config_kwargs["sequence_len"]:
+    raise ValueError(
+        f"max_seq_len={sequence_len} exceeds pretrained model context {model_config_kwargs['sequence_len']}"
+    )
 
 # -----------------------------------------------------------------------------
-# Extract Q&A pairs from Hansard
+# Load Powell text
 
-def extract_qa_pairs(max_pairs=-1):
-    """
-    Extract Q&A pairs from Hansard parliamentary proceedings.
-    Pattern: Someone asks "To ask Her Majesty's Government..." then someone responds.
-    """
-    print0("Loading Hansard dataset...")
-    dataset = load_dataset("common-pile/uk_hansard", split="train", streaming=True)
-    
-    qa_pairs = []
-    # Pattern: Name: To ask His/Her Majesty's Government [question]
-    question_pattern = re.compile(
-        r'^([A-Za-z\s\-\'\.]+?):\s*(To ask (His|Her) Majesty\'s Government|asked (His|Her) Majesty\'s Government)',
-        re.MULTILINE
-    )
-    
-    for doc_idx, example in enumerate(dataset):
-        if max_pairs > 0 and len(qa_pairs) >= max_pairs:
-            break
-        if doc_idx % 1000 == 0:
-            print0(f"Processed {doc_idx} docs, found {len(qa_pairs)} Q&A pairs...")
-        
-        text = example["text"]
-        
-        # Split into paragraphs
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-        
-        i = 0
-        while i < len(paragraphs) - 1:
-            para = paragraphs[i]
-            
-            # Check if this paragraph contains a question
-            if any(phrase in para for phrase in [
-                "To ask Her Majesty's Government", "To ask His Majesty's Government",
-                "asked Her Majesty's Government", "asked His Majesty's Government"
-            ]):
-                # This is a question - next paragraph(s) should be the answer
-                question = para
-                
-                # Get the answer (next paragraph that starts with a name)
-                answer_parts = []
-                j = i + 1
-                while j < len(paragraphs):
-                    next_para = paragraphs[j]
-                    # Check if it looks like an answer (starts with a name followed by colon)
-                    if re.match(r'^[A-Za-z\s\-\'\.\,]+?:', next_para):
-                        answer_parts.append(next_para)
-                        break
-                    j += 1
-                
-                if answer_parts:
-                    answer = ' '.join(answer_parts)
-                    qa_pairs.append({
-                        "messages": [
-                            {"role": "user", "content": question},
-                            {"role": "assistant", "content": answer}
-                        ]
-                    })
-                    i = j + 1
-                    continue
-            i += 1
-    
-    print0(f"Extracted {len(qa_pairs)} Q&A pairs")
-    return qa_pairs
+def load_powell_documents(data_dir):
+    if not os.path.isdir(data_dir):
+        raise FileNotFoundError(
+            f"No Powell data directory found at {data_dir}. Run `python -m nanochat.dataset --hansard` first."
+        )
+    parquet_paths = list_parquet_files(data_dir=data_dir)
+    if not parquet_paths:
+        raise FileNotFoundError(
+            f"No Powell parquet files found in {data_dir}. Run `python -m nanochat.dataset --hansard` first."
+        )
 
-print0("Extracting Q&A pairs from Hansard...")
-all_qa_pairs = extract_qa_pairs(max_pairs=max_qa_pairs)
+    documents = []
+    for path in parquet_paths:
+        pf = pq.ParquetFile(path)
+        for rg_idx in range(pf.num_row_groups):
+            rg = pf.read_row_group(rg_idx, columns=["text"])
+            documents.extend(text.strip() for text in rg.column("text").to_pylist() if text and text.strip())
+    if not documents:
+        raise ValueError(f"No Powell text rows found in {data_dir}")
+    return documents
 
-if len(all_qa_pairs) == 0:
-    raise ValueError("No Q&A pairs extracted. Check the parsing logic.")
+def flatten_tokenized_documents(documents):
+    bos_token = tokenizer.get_bos_token_id()
+    token_ids = []
+    for start in range(0, len(documents), tokenizer_batch_size):
+        batch = documents[start:start + tokenizer_batch_size]
+        tokenized_batch = tokenizer.encode(batch, prepend=bos_token)
+        for ids in tokenized_batch:
+            token_ids.extend(ids)
+    if len(token_ids) <= sequence_len:
+        raise ValueError(
+            f"Need more than {sequence_len:,} tokens to form a full sequence, got {len(token_ids):,}"
+        )
+    return torch.tensor(token_ids, dtype=torch.long)
 
-# Split train/val
-val_size = max(1, int(len(all_qa_pairs) * val_ratio))
-train_qa = all_qa_pairs[:-val_size]
-val_qa = all_qa_pairs[-val_size:]
-print0(f"Train: {len(train_qa)}, Val: {len(val_qa)}")
+powell_data_dir = powell_data_dir or HANSARD_POWELL_SFT_DIR
+print0(f"Loading Powell data from {powell_data_dir}")
+all_documents = load_powell_documents(powell_data_dir)
+
+if len(all_documents) < 2:
+    raise ValueError("Need at least two Powell documents to create train/val splits.")
+
+val_size = max(1, int(len(all_documents) * val_ratio))
+if val_size >= len(all_documents):
+    val_size = len(all_documents) - 1
+train_documents = all_documents[:-val_size]
+val_documents = all_documents[-val_size:]
+print0(f"Train documents: {len(train_documents):,}, Val documents: {len(val_documents):,}")
+
+train_tokens = flatten_tokenized_documents(train_documents)
+val_tokens = flatten_tokenized_documents(val_documents)
+train_sequences = (train_tokens.numel() - 1) // sequence_len
+val_sequences = (val_tokens.numel() - 1) // sequence_len
+print0(f"Train tokens: {train_tokens.numel():,}, Val tokens: {val_tokens.numel():,}")
+print0(f"Train sequences: {train_sequences:,}, Val sequences: {val_sequences:,}")
 
 # -----------------------------------------------------------------------------
 # DataLoader
@@ -226,11 +212,11 @@ grad_accum_steps = target_examples_per_step // examples_per_step
 print0(f"Grad accum steps: {grad_accum_steps}")
 
 if num_iterations == -1:
-    num_iterations = max(1, (len(train_qa) // target_examples_per_step) * num_epochs)
+    num_iterations = max(1, math.ceil(train_sequences / target_examples_per_step) * num_epochs)
 print0(f"Iterations: {num_iterations}")
 
-train_loader = sft_data_generator(train_qa, device_batch_size)
-build_val_loader = lambda: sft_data_generator(val_qa, device_batch_size)
+train_loader = lm_data_generator(train_tokens, device_batch_size)
+build_val_loader = lambda: lm_data_generator(val_tokens, device_batch_size)
 
 # -----------------------------------------------------------------------------
 # Optimizer
@@ -260,12 +246,11 @@ train_loss_item = float("inf")
 for step_num in range(num_iterations):
     last_step = step_num == num_iterations - 1
 
-    # Validation
     if last_step or step_num % eval_every == 0:
         model.eval()
         val_loader = build_val_loader()
         losses = []
-        actual_eval_steps = max(1, min(eval_steps, len(val_qa) // device_batch_size))
+        actual_eval_steps = max(1, min(eval_steps, math.ceil(val_sequences / (device_batch_size * ddp_world_size))))
         for _ in range(actual_eval_steps):
             val_inputs, val_targets = next(val_loader)
             with torch.no_grad(), autocast_ctx:
@@ -282,7 +267,6 @@ for step_num in range(num_iterations):
     if last_step:
         break
 
-    # Training
     num_tokens = torch.tensor(0, device=device)
     for _ in range(grad_accum_steps):
         train_inputs, train_targets = next(train_loader)
@@ -290,8 +274,8 @@ for step_num in range(num_iterations):
             loss = model(train_inputs, train_targets)
         train_loss = loss.detach()
         (loss / grad_accum_steps).backward()
-        num_tokens += (train_targets >= 0).sum()
-    
+        num_tokens += train_targets.numel()
+
     if ddp:
         dist.all_reduce(num_tokens, op=dist.ReduceOp.SUM)
 
@@ -317,13 +301,20 @@ if master_process:
         "step": step_num,
         "val_loss": val_loss,
         "model_config": model_config_kwargs,
-        "num_qa_pairs": len(train_qa),
+        "powell_data_dir": powell_data_dir,
+        "train_documents": len(train_documents),
+        "val_documents": len(val_documents),
+        "train_tokens": int(train_tokens.numel()),
+        "val_tokens": int(val_tokens.numel()),
     })
     print(f"Saved to {output_dir}")
 
 from nanochat.report import get_report
 get_report().log(section="Hansard SFT", data=[user_config, {
-    "Q&A pairs": len(train_qa),
+    "Train documents": len(train_documents),
+    "Val documents": len(val_documents),
+    "Train tokens": int(train_tokens.numel()),
+    "Val tokens": int(val_tokens.numel()),
     "Iterations": num_iterations,
     "Final train loss": train_loss_item,
     "Final val loss": val_loss,

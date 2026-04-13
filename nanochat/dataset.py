@@ -9,6 +9,8 @@ For details of how the dataset was prepared, see `repackage_data_reference.py`.
 
 import os
 import argparse
+import shutil
+import re
 import time
 import requests
 import pyarrow.parquet as pq
@@ -27,6 +29,7 @@ base_dir = get_base_dir()
 DATA_DIR = os.path.join(base_dir, "base_data")
 _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HANSARD_DATA_DIR = os.path.join(_project_dir, "data", "hansard_data")
+HANSARD_POWELL_SFT_DIR = os.path.join(_project_dir, "data", "hansard_powell_sft")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # -----------------------------------------------------------------------------
@@ -121,31 +124,78 @@ def download_hansard():
     import unicodedata
     import pyarrow as pa
     from datasets import load_dataset
-    
-    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hansard_dir = os.path.join(project_dir, "data", "hansard_data")
-    os.makedirs(hansard_dir, exist_ok=True)
-    
-    print("Downloading UK Hansard...")
-    dataset = load_dataset("common-pile/uk_hansard", split="train")
-    
-    texts = []
-    shard_idx = 0
-    for i, ex in enumerate(dataset):
-        texts.append(unicodedata.normalize("NFKC", ex["text"]))
-        if len(texts) >= 10000:
-            table = pa.table({"text": texts})
-            path = os.path.join(hansard_dir, f"shard_{shard_idx:05d}.parquet")
-            pq.write_table(table, path, row_group_size=1024)
-            print(f"Wrote {path}")
-            texts = []
-            shard_idx += 1
-    if texts:
+
+    def has_complete_parquet_output(data_dir):
+        return os.path.isdir(data_dir) and any(
+            filename.endswith(".parquet") and not filename.endswith(".tmp")
+            for filename in os.listdir(data_dir)
+        )
+
+    def flush_shard(texts, data_dir, shard_idx):
+        if not texts:
+            return shard_idx
         table = pa.table({"text": texts})
-        path = os.path.join(hansard_dir, f"shard_{shard_idx:05d}.parquet")
+        path = os.path.join(data_dir, f"shard_{shard_idx:05d}.parquet")
         pq.write_table(table, path, row_group_size=1024)
-        print(f"Wrote {path}")
-    print(f"Done! Saved to {hansard_dir}")
+        print(f"Wrote {path} ({len(texts):,} rows)")
+        texts.clear()
+        return shard_idx + 1
+
+    hansard_dir = HANSARD_DATA_DIR
+    powell_dir = HANSARD_POWELL_SFT_DIR
+    if has_complete_parquet_output(hansard_dir) and has_complete_parquet_output(powell_dir):
+        print(f"Using existing Hansard shards in {hansard_dir}")
+        print(f"Using existing Powell shards in {powell_dir}")
+        return
+
+    hansard_tmp_dir = hansard_dir + ".tmp"
+    powell_tmp_dir = powell_dir + ".tmp"
+    if os.path.exists(hansard_tmp_dir):
+        shutil.rmtree(hansard_tmp_dir)
+    if os.path.exists(powell_tmp_dir):
+        shutil.rmtree(powell_tmp_dir)
+    os.makedirs(hansard_tmp_dir, exist_ok=True)
+    os.makedirs(powell_tmp_dir, exist_ok=True)
+
+    print("Downloading UK Hansard...")
+    ds = load_dataset("common-pile/uk_hansard")
+    dataset = ds["train"].shuffle(seed=42)
+
+    powell_pattern = re.compile(r"^(?:Mr\.?\s+)?(?:J\.?\s*)?Enoch Powell\s*:", re.IGNORECASE)
+    powell_texts = []
+    hansard_shard_idx = 0
+    powell_shard_idx = 0
+    hansard_texts = []
+    powell_matches = 0
+    for i, ex in enumerate(dataset):
+        text = unicodedata.normalize("NFKC", ex["text"])
+        hansard_texts.append(text)
+        paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
+        for paragraph in paragraphs:
+            if powell_pattern.match(paragraph):
+                powell_texts.append(paragraph)
+                powell_matches += 1
+
+        if len(hansard_texts) >= 10000:
+            hansard_shard_idx = flush_shard(hansard_texts, hansard_tmp_dir, hansard_shard_idx)
+        if len(powell_texts) >= 10000:
+            powell_shard_idx = flush_shard(powell_texts, powell_tmp_dir, powell_shard_idx)
+        if (i + 1) % 1000 == 0:
+            print(f"Processed {i + 1:,} docs | Powell paragraphs: {powell_matches:,}")
+
+    hansard_shard_idx = flush_shard(hansard_texts, hansard_tmp_dir, hansard_shard_idx)
+    powell_shard_idx = flush_shard(powell_texts, powell_tmp_dir, powell_shard_idx)
+
+    if os.path.exists(hansard_dir):
+        shutil.rmtree(hansard_dir)
+    if os.path.exists(powell_dir):
+        shutil.rmtree(powell_dir)
+    os.replace(hansard_tmp_dir, hansard_dir)
+    os.replace(powell_tmp_dir, powell_dir)
+
+    print(f"Done! Saved {hansard_shard_idx:,} full-data shard(s) to {hansard_dir}")
+    print(f"Done! Saved {powell_shard_idx:,} Powell shard(s) to {powell_dir}")
+    print(f"Powell paragraphs matched: {powell_matches:,}")
 
 
 if __name__ == "__main__":

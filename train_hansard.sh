@@ -1,19 +1,47 @@
 #!/bin/bash
+set -euo pipefail
+
 # Optimized training config for Hansard dataset on 80GB A100
-# Following Chinchilla's law (20 tokens per parameter)
-#
-# Model: ~300M parameters (depth=24)
-# Sequence length: 2048 tokens
-# Batch size optimized for 80GB A100
+# One-pass pretraining over the shuffled Hansard train split.
+
+RUN_NAME="${RUN_NAME:-hansard_d12}"
+MODEL_TAG="${MODEL_TAG:-d12}"
+DEPTH="${DEPTH:-12}"
+MAX_SEQ_LEN="${MAX_SEQ_LEN:-2048}"
+DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-64}"
+TOTAL_BATCH_SIZE="${TOTAL_BATCH_SIZE:-524288}"
+
+echo "Counting actual train tokens from shuffled Hansard shards..."
+TRAIN_TOKENS=$(python -m scripts.count_tokens --split train | awk '/Total tokens:/ {gsub(/,/, "", $3); print $3}')
+if [ -z "${TRAIN_TOKENS}" ]; then
+  echo "Failed to determine train token count."
+  exit 1
+fi
+
+SUPERVISED_TOKENS=$(( TRAIN_TOKENS - 1 ))
+if [ "${SUPERVISED_TOKENS}" -lt 1 ]; then
+  SUPERVISED_TOKENS=1
+fi
+
+NUM_ITERATIONS=$(( SUPERVISED_TOKENS / TOTAL_BATCH_SIZE ))
+if [ "${NUM_ITERATIONS}" -lt 1 ]; then
+  NUM_ITERATIONS=1
+fi
+
+echo "Train tokens: ${TRAIN_TOKENS}"
+echo "Supervised next-token targets: ${SUPERVISED_TOKENS}"
+echo "Total batch size: ${TOTAL_BATCH_SIZE}"
+echo "One-pass num_iterations: ${NUM_ITERATIONS}"
 
 python -m scripts.base_train \
-  --run="hansard_d24" \
+  --run="${RUN_NAME}" \
+  --model_tag="${MODEL_TAG}" \
   --tokenizer_name="hansard" \
-  --depth=24 \
-  --max_seq_len=2048 \
-  --device_batch_size=64 \
-  --total_batch_size=524288 \
-  --target_param_data_ratio=20 \
+  --depth="${DEPTH}" \
+  --max_seq_len="${MAX_SEQ_LEN}" \
+  --device_batch_size="${DEVICE_BATCH_SIZE}" \
+  --total_batch_size="${TOTAL_BATCH_SIZE}" \
+  --num_iterations="${NUM_ITERATIONS}" \
   --embedding_lr=0.2 \
   --unembedding_lr=0.004 \
   --matrix_lr=0.02 \
@@ -28,28 +56,14 @@ python -m scripts.base_train \
   --sample_every=1000 \
   --save_every=2000
 
-# Model architecture breakdown (depth=24):
-# - Layers: 24
-# - Dimension: 24 * 64 = 1536
-# - Heads: (1536 + 127) // 128 = 13
-# - Parameters: ~300M
+# Model architecture breakdown (depth=12):
+# - Layers: 12
+# - Dimension: 12 * 64 = 768
+# - Heads: (768 + 127) // 128 = 6
+# - Parameters: ~125M-class
 #
-# With Chinchilla ratio of 20:
-# - Training tokens: 300M * 20 = 6B tokens
-# - Iterations: 6B / 524288 ≈ 11,445 steps
-#
-# Batch size (per GPU):
-# - device_batch_size=64, seq_len=2048 → 131,072 tokens/step
-# - total_batch_size=524288 → grad_accum_steps=4 (on single GPU)
-#
-# Memory estimate for 80GB A100:
-# - Model: ~1.2GB (fp32 params)
-# - Activations: ~8-12GB (with grad checkpointing if needed)
-# - Optimizer states: ~2.4GB
-# - Batch: ~4GB
-# - Total: ~16-20GB → plenty of headroom, can increase device_batch_size if desired
-#
-# To maximize throughput, you can try:
-# - Increase device_batch_size to 96 or 128
-# - Enable flash attention (if available)
-# - Use torch.compile (already enabled by default)
+# Training horizon:
+# - Train tokens are counted from the actual shuffled train split
+# - supervised_tokens = train_tokens - 1
+# - num_iterations = floor(supervised_tokens / total_batch_size)
+# - This gives one pass over the train split with no intentional repetition
