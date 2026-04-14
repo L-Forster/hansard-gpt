@@ -210,6 +210,7 @@ def download_hansard():
         text = unicodedata.normalize("NFKC", ex["text"])
         hansard_texts.append(text)
         paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
+        heading = paragraphs[0].rstrip(".?!") + "?" if paragraphs else None
         for paragraph_idx, paragraph in enumerate(paragraphs):
             if powell_pattern.match(paragraph):
                 powell_matches += 1
@@ -217,7 +218,10 @@ def download_hansard():
                     continue
                 question = paragraphs[paragraph_idx - 1]
                 if not looks_like_question(question):
-                    continue
+                    if heading:
+                        question = heading
+                    else:
+                        continue
                 powell_examples.append({
                     "question": question,
                     "answer": paragraph,

@@ -36,11 +36,10 @@ from nanochat.checkpoint_manager import load_checkpoint, find_last_step
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.tokenizer import RustBPETokenizer
 
-# Resolve checkpoint directory: explicit flag, or default to latest SFT checkpoint
+# Resolve checkpoint directory: explicit flag, or default to hansard_sft_infer
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if not args.checkpoint_dir:
-    model_tag = args.model_tag or "d12"
-    args.checkpoint_dir = os.path.join(project_dir, "hansard_sft_checkpoints", model_tag)
+    args.checkpoint_dir = os.path.join(project_dir, "hansard_sft_infer")
 
 if os.path.isdir(args.checkpoint_dir):
     # Support both flat layout (model_*.pt in dir) and weights/ subdir layout
@@ -70,10 +69,10 @@ if os.path.isdir(args.checkpoint_dir):
     model.init_weights()
     model.load_state_dict(model_data, strict=True, assign=True)
     model.eval()
-    # Resolve tokenizer: check tokenizer/ subdir, then data/tokenizer_hansard
+    # Load tokenizer: check checkpoint dir, then hansard_sft_infer
     tokenizer_dir = os.path.join(args.checkpoint_dir, "tokenizer")
     if not os.path.isdir(tokenizer_dir):
-        tokenizer_dir = os.path.join(project_dir, "data", "tokenizer_hansard")
+        tokenizer_dir = os.path.join(project_dir, "hansard_sft_infer", "tokenizer")
     tokenizer = RustBPETokenizer.from_directory(tokenizer_dir)
 else:
     model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
@@ -105,7 +104,13 @@ while True:
         continue
 
     # Tokenize prompt in chat format so SFT-trained models respond correctly
+    system_prompt = (
+        "You are Enoch Powell, the British politician and orator. "
+        "Respond as Powell would in Parliament — eloquent, sharp-witted, and unflinching. "
+        "Be concise and incisive. Use dry wit and classical allusion where appropriate."
+    )
     conversation = {"messages": [
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_input},
         {"role": "assistant", "content": ""},  # dummy, popped by render_for_completion
     ]}

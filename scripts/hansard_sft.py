@@ -124,6 +124,7 @@ if tokenizer_dir:
 else:
     candidate_tokenizer_dirs = [
         os.path.join(project_dir, "data", "tokenizer_hansard"),
+        os.path.join(project_dir, "hansard_sft_infer", "tokenizer"),
         os.path.join(project_dir, "hansard", "tokenizer"),
     ]
     tokenizer = None
@@ -351,7 +352,7 @@ for step_num in range(num_iterations):
 # Save
 
 if master_process:
-    output_dir = os.path.join(project_dir, "hansard_sft_checkpoints", model_tag)
+    output_dir = os.path.join(project_dir, "hansard_sft_infer", "weights")
     os.makedirs(output_dir, exist_ok=True)
     save_state = best_model_state if best_model_state is not None else orig_model.state_dict()
     print0(f"Saving best checkpoint (val_loss={best_val_loss:.6f})")
